@@ -61,7 +61,7 @@
 #define DEFAULT_FAN_MAX_PWM 100
 #define DEFAULT_FAN_MIN_PWM 0
 #define DEFAULT_HEATER_ON_BEDTEMP   90.0  // Bed setpoint to enable the heater
-#define DEFAULT_FAN_ON_BEDTEMP      90    // Bed setpoint to enable the fan.
+#define DEFAULT_FAN_ON_CHAMBER_TEMP  60   // Chamber setpoint to enable the fan.
 #define DEFAULT_CHAMBER_TRIP_TEMP   70.0   // Chamber too hot safety latch
 #define CHAMBER_RESET_TEMP_OFFSET  10.0   // Chamber cool enough safety latch
 
@@ -82,7 +82,7 @@ Config cfg = {
   "",  // ip
   "",  // code
   DEFAULT_HEATER_ON_BEDTEMP,  // heaterOnTemp
-  DEFAULT_FAN_ON_BEDTEMP,     // fanOnTemp
+  DEFAULT_FAN_ON_CHAMBER_TEMP,     // fanOnTemp
   DEFAULT_CHAMBER_TRIP_TEMP,  // chamberMaxTemp
   DEFAULT_FAN_MAX_PWM,        // fanSpeedMax
   DEFAULT_FAN_MIN_PWM         // fanSpeedMin
@@ -92,7 +92,7 @@ Config cfg = {
 WiFiManagerParameter *wm_ip;
 WiFiManagerParameter *wm_code;
 WiFiManagerParameter *wm_bed_heater_temp;
-WiFiManagerParameter *wm_bed_fan_temp;
+WiFiManagerParameter *wm_chamber_fan_temp;
 WiFiManagerParameter *wm_pwm_max;
 WiFiManagerParameter *wm_pwm_min;
 WiFiManagerParameter *wm_chamber_max_temp;
@@ -192,7 +192,7 @@ void handleTemps(float bedSetpoint, float chamberTemp) {
   }
 
   // Handle turning the fan on.
-  if (bedSetpoint >= cfg.fanOnTemp && bedSetpoint < MAX_BED_TEMP) {
+  if (chamberTemp >= cfg.fanOnTemp) {
     fanOn();
   }else{
     fanIdle();
@@ -247,17 +247,17 @@ void setupWiFiManagerParams() {
         "bed_on",
         "Heater On Bed Temp (°C)",
         heaterTempStr,
-        3
+        4
     );
     
     static char fanTempStr[4];
     snprintf(fanTempStr, sizeof(fanTempStr), "%d", cfg.fanOnTemp);
     
-    wm_bed_fan_temp = new WiFiManagerParameter(
+    wm_chamber_fan_temp = new WiFiManagerParameter(
         "bed_off",
-        "Fan On Bed Temp (°C)",
+        "Fan On Chamber Temp (°C)",
         fanTempStr,
-        3
+        4
     );
     
     static char pwmMaxStr[4];
@@ -267,7 +267,7 @@ void setupWiFiManagerParams() {
         "fan_max",
         "Max Fan Speed (%)",
         pwmMaxStr,
-        3
+        4
     );
     
     static char pwmMinStr[4];
@@ -277,7 +277,7 @@ void setupWiFiManagerParams() {
         "fan_min",
         "Min Fan Speed (%)",
         pwmMinStr,
-        3
+        4
     );
     
     static char chamberTempStr[4];
@@ -287,7 +287,7 @@ void setupWiFiManagerParams() {
         "cbr_max",
         "Chamber Max Temp (°C)",
         chamberTempStr,
-        3
+        4
     );
 }
 
@@ -316,13 +316,13 @@ void startPortal(void) {
   wm.addParameter(wm_ip);
   wm.addParameter(wm_code);
   wm.addParameter(wm_bed_heater_temp);
-  wm.addParameter(wm_bed_fan_temp);
+  wm.addParameter(wm_chamber_fan_temp);
   wm.addParameter(wm_pwm_max);
   wm.addParameter(wm_pwm_min);
   wm.addParameter(wm_chamber_max_temp);
 
   // Set callback when user hits save
-  wm.setPreSaveParamsCallback([] () {
+  wm.setSaveParamsCallback([] () {
     strncpy(cfg.ip,     wm_ip->getValue(),     15);  cfg.ip[15]   = '\0';
     strncpy(cfg.code,   wm_code->getValue(),    8);  cfg.code[8]  = '\0';
 
@@ -332,9 +332,9 @@ void startPortal(void) {
       cfg.heaterOnTemp = DEFAULT_HEATER_ON_BEDTEMP;
     }
     //Check lower bounds (0 would mean on all the time.)
-    cfg.fanOnTemp = atoi(wm_bed_fan_temp->getValue());
+    cfg.fanOnTemp = atoi(wm_chamber_fan_temp->getValue());
     if(cfg.fanOnTemp <= 0.00){
-      cfg.fanOnTemp = DEFAULT_FAN_ON_BEDTEMP;
+      cfg.fanOnTemp = DEFAULT_FAN_ON_CHAMBER_TEMP;
     }
     //Check upper bounds (Cannot exceed 70)
     cfg.chamberMaxTemp = atoi(wm_chamber_max_temp->getValue());
@@ -353,7 +353,7 @@ void startPortal(void) {
     }else if(cfg.fanSpeedMin > cfg.fanSpeedMax){
       cfg.fanSpeedMin = cfg.fanSpeedMax;
     }
-
+    printCfg();
     eepromSave(cfg);
   });
 
@@ -456,6 +456,31 @@ void printCfg() {
   Serial.print("  Fan Min: ");      Serial.println(cfg.fanSpeedMin);
 }
 
+void validateCfg() {
+    //Check lower bounds (0 would mean on all the time.)
+    if(cfg.heaterOnTemp <= 0.00){
+      cfg.heaterOnTemp = DEFAULT_HEATER_ON_BEDTEMP;
+    }
+    //Check lower bounds (0 would mean on all the time.)
+    if(cfg.fanOnTemp <= 0.00){
+      cfg.fanOnTemp = DEFAULT_FAN_ON_CHAMBER_TEMP;
+    }
+    //Check upper bounds (Cannot exceed 70)
+    if(cfg.chamberMaxTemp > DEFAULT_CHAMBER_TRIP_TEMP){
+      cfg.chamberMaxTemp = DEFAULT_CHAMBER_TRIP_TEMP;
+    }
+    //Check upper bounds, invalid means we set to default.
+    if(cfg.fanSpeedMax < DEFAULT_FAN_MIN_PWM ||  cfg.fanSpeedMax > DEFAULT_FAN_MAX_PWM){
+       cfg.fanSpeedMax = DEFAULT_FAN_MAX_PWM;
+    }
+    //Check lower bounds - invalid means we set to default
+    if(cfg.fanSpeedMin < DEFAULT_FAN_MIN_PWM ||  cfg.fanSpeedMin > DEFAULT_FAN_MAX_PWM){
+       cfg.fanSpeedMin = DEFAULT_FAN_MIN_PWM;
+    }else if(cfg.fanSpeedMin > cfg.fanSpeedMax){
+      cfg.fanSpeedMin = cfg.fanSpeedMax;
+    }
+}
+
 // ──────────────────────────────────────────────────────
 // Setup
 // ──────────────────────────────────────────────────────
@@ -478,17 +503,19 @@ void setup() {
   // 1. Try to load saved config from EEPROM
   bool hasCfg = eepromLoad(cfg);
 
-  // 2. If no config at all, open portal
+  // 2. Validate Config
+  validateCfg();
+  printCfg();
+
+  // 3. If no config at all, open portal
   if (!hasCfg ||
       strlen(cfg.ip) == 0 ||
       strlen(cfg.code) == 0) {
     Serial.println("[Boot] No config found - starting portal.");
     startPortal(); // does not return; reboots after save
   }
-
-  printCfg();
   
-  // 3. Connect WiFi (STA mode, previously saved by WiFiManager)
+  // 4. Connect WiFi (STA mode, previously saved by WiFiManager)
   WiFi.mode(WIFI_STA);
   WiFi.begin();   // reconnects to last-known network
   Serial.print("[WiFi] Connecting");
@@ -507,12 +534,12 @@ void setup() {
   //Setup auto reconnnect
   WiFi.setAutoReconnect(true);
 
-  // 4. First MQTT connection attempt
+  // 5. First MQTT connection attempt
   if (!mqttConnect()) {
     Serial.println("[Boot] Initial MQTT connect failed.");
   }
 
-  // 5. Make sure the data watchdog and all flags are reset.
+  // 6. Make sure the data watchdog and all flags are reset.
   resetHeaterControl();
 }
 
